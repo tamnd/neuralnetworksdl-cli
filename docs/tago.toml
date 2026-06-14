@@ -1,0 +1,10 @@
+title       = "neuralnetworksdl"
+baseURL     = "https://neuralnetworksdl-cli.tamnd.com/"
+description = "A command line for neuralnetworksdl."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/neuralnetworksdl-cli"
