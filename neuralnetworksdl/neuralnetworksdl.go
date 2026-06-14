@@ -1,15 +1,16 @@
 // Package neuralnetworksdl is the library behind the neuralnetworksdl command line:
-// the HTTP client, request shaping, and the typed data models for neuralnetworksdl.
+// the HTTP client, request shaping, and the typed data models for
+// neuralnetworksanddeeplearning.com.
 //
 // The Client here is the spine every command shares. It sets a real
 // User-Agent, paces requests so a busy session stays polite, and retries the
 // transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
 package neuralnetworksdl
 
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"regexp"
@@ -17,19 +18,16 @@ import (
 	"time"
 )
 
-// DefaultUserAgent identifies the client to neuralnetworksdl. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
+// DefaultUserAgent identifies the client to neuralnetworksanddeeplearning.com.
 const DefaultUserAgent = "neuralnetworksdl/dev (+https://github.com/tamnd/neuralnetworksdl-cli)"
 
-// Host is the site this client talks to, and the host the URI driver in
-// domain.go claims. The scaffold points it at neuralnetworksdl.com; change it once you
-// know the real endpoints you want to read.
-const Host = "neuralnetworksdl.com"
+// Host is the site this client talks to.
+const Host = "neuralnetworksanddeeplearning.com"
 
 // BaseURL is the root every request is built from.
-const BaseURL = "https://" + Host
+const BaseURL = "http://" + Host
 
-// Client talks to neuralnetworksdl over HTTP.
+// Client talks to neuralnetworksanddeeplearning.com over HTTP.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -116,18 +114,11 @@ func (c *Client) pace() {
 }
 
 func backoff(attempt int) time.Duration {
-	d := time.Duration(attempt) * 500 * time.Millisecond
-	if d > 5*time.Second {
-		d = 5 * time.Second
-	}
-	return d
+	return min(time.Duration(attempt)*500*time.Millisecond, 5*time.Second)
 }
 
 // Page is the scaffold's one example record: a single page, addressed by the
-// path that names it on neuralnetworksdl.com. It is a stand-in for the typed records you
-// will model from the real neuralnetworksdl endpoints. The kit struct tags make it
-// addressable as a resource URI (see domain.go): ID is the URI id, and Body is
-// the long text `neuralnetworksdl cat` and the Markdown export print.
+// path that names it on neuralnetworksanddeeplearning.com.
 type Page struct {
 	ID    string `json:"id" kit:"id"`
 	URL   string `json:"url"`
@@ -135,9 +126,7 @@ type Page struct {
 	Body  string `json:"body,omitempty" kit:"body"`
 }
 
-// GetPage fetches one page by its path (for example "wiki/Go") and returns it as
-// a record. The scaffold keeps a plain-text preview of the response as the body;
-// replace the parsing with the real fields once you know the endpoint's shape.
+// GetPage fetches one page by its path and returns it as a record.
 func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
 	path = strings.Trim(path, "/")
 	url := BaseURL + "/" + path
@@ -148,9 +137,8 @@ func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
 	return &Page{ID: path, URL: url, Title: path, Body: pageText(body)}, nil
 }
 
-// PageLinks fetches a page and returns the same-host pages it links to, as page
-// stubs. It shows the member-listing pattern the URI driver relies on: every
-// stub carries enough (an id and a URL) to be addressed and followed on its own.
+// PageLinks fetches a page and returns the same-host pages it links to, as
+// page stubs.
 func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page, error) {
 	path = strings.Trim(path, "/")
 	body, err := c.Get(ctx, BaseURL+"/"+path)
@@ -172,13 +160,75 @@ func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page
 	return out, nil
 }
 
+// Chapter is one entry in the Neural Networks and Deep Learning table of
+// contents.
+type Chapter struct {
+	Rank   int    `json:"rank"   kit:"rank"`
+	Number string `json:"number" kit:"id"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+}
+
 var (
-	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
-	tagRE  = regexp.MustCompile(`<[^>]+>`)
+	mainChapRe = regexp.MustCompile(`(?s)class=['"]toc_mainchapter['"][^>]*>.*?<a href="(chap\d+\.html)"[^>]*>([^<]+)</a>`)
+	appendixRe = regexp.MustCompile(`<a href="(sai\.html)"[^>]*>((?:[^<]|<em>[^<]*</em>)+)</a>`)
+	tagRE      = regexp.MustCompile(`<[^>]+>`)
 )
 
-// linkPaths pulls the relative link targets out of an HTML response, so a list
-// op can turn each into an addressable page stub.
+// Chapters fetches the homepage and returns the full table of contents.
+func (c *Client) Chapters(ctx context.Context) ([]*Chapter, error) {
+	body, err := c.Get(ctx, BaseURL+"/")
+	if err != nil {
+		return nil, err
+	}
+	pageHTML := string(body)
+	var chapters []*Chapter
+	rank := 1
+
+	for _, m := range mainChapRe.FindAllStringSubmatch(pageHTML, -1) {
+		href := m[1]
+		title := html.UnescapeString(strings.TrimSpace(m[2]))
+		chapters = append(chapters, &Chapter{
+			Rank:   rank,
+			Number: chapNum(href),
+			Title:  title,
+			URL:    BaseURL + "/" + href,
+		})
+		rank++
+	}
+
+	if m := appendixRe.FindStringSubmatch(pageHTML); m != nil {
+		href := m[1]
+		title := html.UnescapeString(strings.TrimSpace(tagRE.ReplaceAllString(m[2], "")))
+		chapters = append(chapters, &Chapter{
+			Rank:   rank,
+			Number: "A",
+			Title:  title,
+			URL:    BaseURL + "/" + href,
+		})
+	}
+
+	if len(chapters) == 0 {
+		return nil, fmt.Errorf("no chapters found")
+	}
+	return chapters, nil
+}
+
+// chapNum converts a filename like "chap1.html" to "1", and "sai.html" to "A".
+func chapNum(href string) string {
+	href = strings.TrimSuffix(href, ".html")
+	href = strings.TrimPrefix(href, "chap")
+	if href == "sai" {
+		return "A"
+	}
+	return href
+}
+
+var (
+	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
+)
+
+// linkPaths pulls the relative link targets out of an HTML response.
 func linkPaths(body []byte) []string {
 	var out []string
 	for _, m := range hrefRE.FindAllSubmatch(body, -1) {
@@ -189,8 +239,7 @@ func linkPaths(body []byte) []string {
 	return out
 }
 
-// pageText reduces an HTML response to a short plain-text preview, a stand-in
-// for the typed extract a real endpoint would hand you.
+// pageText reduces an HTML response to a short plain-text preview.
 func pageText(body []byte) string {
 	s := strings.Join(strings.Fields(tagRE.ReplaceAllString(string(body), " ")), " ")
 	if len(s) > 500 {
